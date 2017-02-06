@@ -1,9 +1,12 @@
 import load_sst_data
+import pprint
 import utils
 import time
+import sys
 import numpy as np
+import gflags
 
-from utils import Accumulator, Args, make_batch
+from utils import Accumulator, Args
 
 # PyTorch
 import torch
@@ -13,10 +16,17 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 
+FLAGS = gflags.FLAGS
 args = Args()
 
+gflags.DEFINE_enum("style", "dynamic", ["static", "dynamic"],
+    "Specify dynamic or static RNN loops.")
+
+# Parse command line flags.
+FLAGS(sys.argv)
+
 # Set args.
-args.training_data_path = 'trees/train.txt'
+args.training_data_path = 'trees/dev.txt'
 args.eval_data_path = 'trees/dev.txt'
 args.embedding_data_path = 'glove.6B.50d.txt'
 args.word_embedding_dim = 50
@@ -28,6 +38,12 @@ args.max_training_steps = 50000
 args.eval_interval_steps = 100
 args.statistics_interval_steps = 100
 args.num_classes = 2
+
+args.__dict__.update(FLAGS.FlagValuesDict())
+
+pp = pprint.PrettyPrinter(indent=4)
+
+print("Args: {}".format(pp.pformat(args.__dict__)))
 
 # Specify data loader.
 data_manager = load_sst_data
@@ -51,9 +67,9 @@ eval_data = utils.Tokenize(eval_data, vocab)
 training_iter = utils.MakeDataIterator(training_data, args.batch_size, forever=True)()
 eval_iter = utils.MakeDataIterator(eval_data, args.batch_size, forever=False)
 
-# Sentence classification model.
-class Net(nn.Module):
-    """Net."""
+# Sentence classification models.
+class DynamicNet(nn.Module):
+    """DynamicNet."""
     def __init__(self,
                  model_dim=None,
                  mlp_dim=None,
@@ -100,6 +116,46 @@ class Net(nn.Module):
         y = F.log_softmax(h)
         return y
 
+
+class StaticNet(nn.Module):
+    """StaticNet."""
+    def __init__(self,
+                 model_dim=None,
+                 mlp_dim=None,
+                 num_classes=None,
+                 word_embedding_dim=None,
+                 initial_embeddings=None,
+                 **kwargs):
+        super(Net, self).__init__()
+        self.model_dim = model_dim
+        self.initial_embeddings = initial_embeddings
+        self.rnn = nn.RNN(word_embedding_dim, model_dim, batch_first=True)
+        self.l0 = nn.Linear(model_dim, mlp_dim)
+        self.l1 = nn.Linear(mlp_dim, num_classes)
+        
+    def forward(self, x):
+        batch_size = x.size(0)
+
+        emb = Variable(torch.from_numpy(
+            self.initial_embeddings.take(x.numpy(), 0)),
+            volatile=not self.training)
+        h0 = Variable(torch.zeros(1, batch_size, self.model_dim), volatile=not self.training)
+
+        _, hn = self.rnn(emb, h0)
+
+        h = F.relu(self.l0(F.dropout(hn.squeeze(), 0.5, self.training)))
+        h = F.relu(self.l1(F.dropout(h, 0.5, self.training)))
+        y = F.log_softmax(h)
+        return y
+
+# Pick model.
+if args.style == "dynamic":
+    Net = DynamicNet
+elif args.style == "static":
+    Net = StaticNet
+else:
+    raise NotImplementedError
+
 # Init model.
 model = Net(
     model_dim=args.model_dim,
@@ -113,20 +169,44 @@ model = Net(
 optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999))
 
 print(model)
+print("Total Params: {}".format(sum(torch.numel(p.data) for p in model.parameters())))
 
 A = Accumulator()
+
+def make_batch(examples, dynamic=True):
+    # Build input.
+    if dynamic: # dynamic: list of lists
+        data = []
+        for e in examples:
+            d = list(reversed(e.tokens[:]))
+            data.append(d)
+    else: # static: batch matrix
+        batch_size = len(examples)
+        max_len = max(len(e.tokens) for e in examples)
+        data = torch.zeros(batch_size, max_len).long()
+        for i, e in enumerate(examples):
+            l = len(e.tokens)
+            offset = max_len - l
+            data[i,offset:max_len] = torch.Tensor(e.tokens[:])
+
+    # Build labels.
+    target = []
+    for e in examples:
+        target.append(e.label)
+    target = torch.LongTensor(target)
+
+    return data, target
 
 # Train loop.
 for step in range(args.max_training_steps):
 
     start = time.time()
 
-    data, target = make_batch(next(training_iter))
+    data, target = make_batch(next(training_iter), args.style == "dynamic")
 
     model.train()
     optimizer.zero_grad()
     y = model(data)
-    target = torch.LongTensor(target)
     loss = F.nll_loss(y, Variable(target, volatile=False))
     loss.backward()
     optimizer.step()
@@ -159,12 +239,11 @@ for step in range(args.max_training_steps):
         for batch in eval_iter():
             start = time.time()
 
-            data, target = make_batch(batch)
+            data, target = make_batch(batch, args.style == "dynamic")
 
             model.eval()
             optimizer.zero_grad()
             y = model(data)
-            target = torch.LongTensor(target)
             pred = y.data.max(1)[1]
             acc = pred.eq(target).sum() / float(args.batch_size)
             loss = F.nll_loss(y, Variable(target, volatile=False))

@@ -81,17 +81,6 @@ def Tokenize(examples, vocabulary):
     return examples
 
 
-def make_batch(examples):
-    data = []
-    target = []
-
-    for e in examples:
-        data.append(list(reversed(e.tokens[:])))
-        target.append(e.label)
-
-    return data, target
-
-
 class Accumulator(object):
 
     cache = dict()
