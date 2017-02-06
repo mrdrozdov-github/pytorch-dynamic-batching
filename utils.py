@@ -76,5 +76,5 @@ def MakeDataIterator(examples, batch_size, forever=True):
 
 def Tokenize(examples, vocabulary):
     for e in examples:
-        e.tokens = [vocabulary.get(w, UNK_TOKEN) for w in e.tokens]
+        e.tokens = [vocabulary.get(w, vocabulary.get(UNK_TOKEN)) for w in e.tokens]
     return examples
