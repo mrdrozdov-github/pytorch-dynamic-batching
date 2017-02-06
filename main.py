@@ -84,7 +84,7 @@ class DynamicNet(nn.Module):
         self.l0 = nn.Linear(model_dim, mlp_dim)
         self.l1 = nn.Linear(mlp_dim, num_classes)
         
-    def forward(self, x):
+    def forward(self, x, lengths):
         batch_size = len(x)
         lengths = [len(s) for s in x]
 
@@ -133,7 +133,7 @@ class StaticNet(nn.Module):
         self.l0 = nn.Linear(model_dim, mlp_dim)
         self.l1 = nn.Linear(mlp_dim, num_classes)
         
-    def forward(self, x):
+    def forward(self, x, lengths):
         batch_size = x.size(0)
 
         emb = Variable(torch.from_numpy(
@@ -174,6 +174,11 @@ print("Total Params: {}".format(sum(torch.numel(p.data) for p in model.parameter
 A = Accumulator()
 
 def make_batch(examples, dynamic=True):
+    # Build lengths.
+    lengths = []
+    for e in examples:
+        lengths.append(len(e.tokens))
+
     # Build input.
     if dynamic: # dynamic: list of lists
         data = []
@@ -195,18 +200,18 @@ def make_batch(examples, dynamic=True):
         target.append(e.label)
     target = torch.LongTensor(target)
 
-    return data, target
+    return data, target, lengths
 
 # Train loop.
 for step in range(args.max_training_steps):
 
     start = time.time()
 
-    data, target = make_batch(next(training_iter), args.style == "dynamic")
+    data, target, lengths = make_batch(next(training_iter), args.style == "dynamic")
 
     model.train()
     optimizer.zero_grad()
-    y = model(data)
+    y = model(data, lengths)
     loss = F.nll_loss(y, Variable(target, volatile=False))
     loss.backward()
     optimizer.step()
@@ -239,11 +244,11 @@ for step in range(args.max_training_steps):
         for batch in eval_iter():
             start = time.time()
 
-            data, target = make_batch(batch, args.style == "dynamic")
+            data, target, lengths = make_batch(batch, args.style == "dynamic")
 
             model.eval()
             optimizer.zero_grad()
-            y = model(data)
+            y = model(data, lengths)
             pred = y.data.max(1)[1]
             acc = pred.eq(target).sum() / float(args.batch_size)
             loss = F.nll_loss(y, Variable(target, volatile=False))
