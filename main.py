@@ -39,7 +39,7 @@ import torch.optim as optim
 FLAGS = gflags.FLAGS
 args = Args()
 
-gflags.DEFINE_enum("style", "dynamic", ["static", "static2", "dynamic", "dynamic2"],
+gflags.DEFINE_enum("style", "dynamic", ["static", "static2", "dynamic", "dynamic2", "fakedynamic", "fakestatic"],
     "Specify dynamic or static RNN loops.")
 gflags.DEFINE_boolean("smart_batching", True, "Bucket batches for similar length.")
 
@@ -98,7 +98,7 @@ class DynamicNet(nn.Module):
                  word_embedding_dim=None,
                  initial_embeddings=None,
                  **kwargs):
-        super(Net, self).__init__()
+        super(DynamicNet, self).__init__()
         self.model_dim = model_dim
         self.initial_embeddings = initial_embeddings
         self.rnn = nn.RNNCell(word_embedding_dim, model_dim)
@@ -147,7 +147,7 @@ class DynamicNet2(nn.Module):
                  word_embedding_dim=None,
                  initial_embeddings=None,
                  **kwargs):
-        super(Net, self).__init__()
+        super(DynamicNet2, self).__init__()
         self.model_dim = model_dim
         self.initial_embeddings = initial_embeddings
         self.rnn = nn.RNNCell(word_embedding_dim, model_dim)
@@ -209,6 +209,86 @@ class DynamicNet2(nn.Module):
         return y
 
 
+class FakeDynamicNet(nn.Module):
+    """FakeDynamicNet."""
+    def __init__(self,
+                 model_dim=None,
+                 mlp_dim=None,
+                 num_classes=None,
+                 word_embedding_dim=None,
+                 initial_embeddings=None,
+                 **kwargs):
+        super(FakeDynamicNet, self).__init__()
+        self.word_embedding_dim = word_embedding_dim
+        self.model_dim = model_dim
+        self.initial_embeddings = initial_embeddings
+        self.rnn = nn.RNNCell(word_embedding_dim, model_dim)
+        self.l0 = nn.Linear(model_dim, mlp_dim)
+        self.l1 = nn.Linear(mlp_dim, num_classes)
+        
+    def forward(self, x, lengths):
+        batch_size = x.size(0)
+        max_len = max(lengths)
+
+        emb = Variable(torch.from_numpy(
+            self.initial_embeddings.take(x.numpy(), 0)),
+            volatile=not self.training)
+
+        for t in range(max_len):
+            indices = []
+            for i, l in enumerate(lengths):
+                if l >= max(lengths) - t:
+                    indices.append(i)
+
+            # Build batch.
+            dynamic_batch_size = len(indices)
+            inp = Variable(torch.FloatTensor(dynamic_batch_size, self.word_embedding_dim), volatile=not self.training)
+            h = Variable(torch.FloatTensor(dynamic_batch_size, self.model_dim), volatile=not self.training)
+            output = self.rnn(inp, h)
+
+        hn = output
+        h = F.relu(self.l0(F.dropout(hn.squeeze(), 0.5, self.training)))
+        h = F.relu(self.l1(F.dropout(h, 0.5, self.training)))
+        y = F.log_softmax(h)
+        return y
+
+
+class FakeStaticNet(nn.Module):
+    """FakeStaticNet."""
+    def __init__(self,
+                 model_dim=None,
+                 mlp_dim=None,
+                 num_classes=None,
+                 word_embedding_dim=None,
+                 initial_embeddings=None,
+                 **kwargs):
+        super(FakeStaticNet, self).__init__()
+        self.word_embedding_dim = word_embedding_dim
+        self.model_dim = model_dim
+        self.initial_embeddings = initial_embeddings
+        self.rnn = nn.RNN(word_embedding_dim, model_dim, batch_first=True)
+        self.l0 = nn.Linear(model_dim, mlp_dim)
+        self.l1 = nn.Linear(mlp_dim, num_classes)
+        
+    def forward(self, x, lengths):
+        batch_size = x.size(0)
+        max_len = max(lengths)
+
+        emb = Variable(torch.from_numpy(
+            self.initial_embeddings.take(x.numpy(), 0)),
+            volatile=not self.training)
+        inp = Variable(torch.FloatTensor(emb.size()), volatile=not self.training)
+        h0 = Variable(torch.FloatTensor(1, batch_size, self.model_dim), volatile=not self.training)
+
+        _, hn = self.rnn(emb, h0)
+
+        h = F.relu(self.l0(F.dropout(hn.squeeze(), 0.5, self.training)))
+        h = F.relu(self.l1(F.dropout(h, 0.5, self.training)))
+        y = F.log_softmax(h)
+        return y
+
+
+
 class StaticNet(nn.Module):
     """StaticNet."""
     def __init__(self,
@@ -218,7 +298,7 @@ class StaticNet(nn.Module):
                  word_embedding_dim=None,
                  initial_embeddings=None,
                  **kwargs):
-        super(Net, self).__init__()
+        super(StaticNet, self).__init__()
         self.model_dim = model_dim
         self.initial_embeddings = initial_embeddings
         self.rnn = nn.RNN(word_embedding_dim, model_dim, batch_first=True)
@@ -250,7 +330,7 @@ class StaticNet2(nn.Module):
                  word_embedding_dim=None,
                  initial_embeddings=None,
                  **kwargs):
-        super(Net, self).__init__()
+        super(StaticNet2, self).__init__()
         self.model_dim = model_dim
         self.initial_embeddings = initial_embeddings
         self.rnn = nn.RNNCell(word_embedding_dim, model_dim)
@@ -283,6 +363,10 @@ elif args.style == "static":
     Net = StaticNet
 elif args.style == "static2":
     Net = StaticNet2
+elif args.style == "fakedynamic":
+    Net = FakeDynamicNet
+elif args.style == "fakestatic":
+    Net = FakeStaticNet
 else:
     raise NotImplementedError
 
