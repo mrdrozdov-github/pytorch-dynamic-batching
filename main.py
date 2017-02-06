@@ -41,6 +41,7 @@ args = Args()
 
 gflags.DEFINE_enum("style", "dynamic", ["static", "static2", "dynamic", "dynamic2"],
     "Specify dynamic or static RNN loops.")
+gflags.DEFINE_boolean("smart_batching", True, "Bucket batches for similar length.")
 
 # Parse command line flags.
 FLAGS(sys.argv)
@@ -84,8 +85,8 @@ training_data = utils.Tokenize(training_data, vocab)
 eval_data = utils.Tokenize(eval_data, vocab)
 
 # Create iterators.
-training_iter = utils.MakeDataIterator(training_data, args.batch_size, forever=True)()
-eval_iter = utils.MakeDataIterator(eval_data, args.batch_size, forever=False)
+training_iter = utils.MakeDataIterator(training_data, args.batch_size, smart_batching=args.smart_batching, forever=True)()
+eval_iter = utils.MakeDataIterator(eval_data, args.batch_size, smart_batching=args.smart_batching, forever=False)
 
 # Sentence classification models.
 class DynamicNet(nn.Module):

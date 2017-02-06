@@ -52,25 +52,67 @@ def LoadEmbeddingsFromText(vocabulary, embedding_dim, path):
     return emb
 
 
-def MakeDataIterator(examples, batch_size, forever=True):
-    def data_iter():
-        dataset_size = len(examples)
-        start = -1 * batch_size
-        order = range(dataset_size)
-        random.shuffle(order)
+def MakeDataIterator(examples, batch_size, forever=True, smart_batching=True, num_buckets=10):
+    if smart_batching:
+        def data_iter():
+            def build_bucketed_batch_indices():
+                batches = []
+                lengths = [(i, len(e.tokens)) for i, e in enumerate(examples)]
 
-        while True:
-            start += batch_size
-            if start > dataset_size - batch_size:
+                # Shuffle before bucketing.
+                random.shuffle(lengths)
 
-                if not forever:
-                    break
+                bucket_size = len(examples) // num_buckets
+                buckets = [lengths[i*bucket_size:(i+1)*bucket_size] for i in range(num_buckets)]
+                buckets = [sorted(b, key=lambda x: x[1]) for b in buckets]
+                for b in buckets:
+                    num_batches = len(b) // batch_size
+                    for i in range(num_batches):
+                        _batch = b[i*batch_size:(i+1)*batch_size]
+                        _batch = [x[0] for x in _batch]
+                        batches.append(_batch)
 
-                # Start another epoch.
-                start = 0
-                random.shuffle(order)
-            batch_indices = order[start:start + batch_size]
-            yield tuple(examples[i] for i in batch_indices)
+                # Shuffle after bucketing
+                random.shuffle(batches)
+
+                return batches
+
+            batch_indices = build_bucketed_batch_indices()
+            num_batches = len(batch_indices)
+            start = -1
+
+            while True:
+                start += 1
+                if start >= num_batches:
+
+                    if not forever:
+                        break
+
+                    # Start another epoch.
+                    batch_indices = build_bucketed_batch_indices()
+                    num_batches = len(batch_indices)
+                    start = 0
+                yield tuple(examples[i] for i in batch_indices[start])
+
+    else:
+        def data_iter():
+            dataset_size = len(examples)
+            start = -1 * batch_size
+            order = range(dataset_size)
+            random.shuffle(order)
+
+            while True:
+                start += batch_size
+                if start > dataset_size - batch_size:
+
+                    if not forever:
+                        break
+
+                    # Start another epoch.
+                    start = 0
+                    random.shuffle(order)
+                batch_indices = order[start:start + batch_size]
+                yield tuple(examples[i] for i in batch_indices)
 
     return data_iter
 
