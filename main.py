@@ -1,3 +1,23 @@
+"""
+
+Dynamic Batched RNNs
+====================
+
+A. Static - Straightforward RNN.
+B. Static2 - RNN using an RNNCell in a loop.
+C. Dynamic - RNN that has dynamically sized input at each timestep. No padding.
+D. Dynamic2 - RNN that has dynamically sized input at each timestep. Uses padding.
+
+
+Speed Ranking (CPU)
+=============
+
+1. Static/Static2 - Similar performance. Surprisingly faster than dynamic alternatives.
+2. Dynamic
+3. Dynamic2
+
+"""
+
 import load_sst_data
 import pprint
 import utils
@@ -19,7 +39,7 @@ import torch.optim as optim
 FLAGS = gflags.FLAGS
 args = Args()
 
-gflags.DEFINE_enum("style", "dynamic", ["static", "dynamic"],
+gflags.DEFINE_enum("style", "dynamic", ["static", "static2", "dynamic", "dynamic2"],
     "Specify dynamic or static RNN loops.")
 
 # Parse command line flags.
@@ -117,6 +137,77 @@ class DynamicNet(nn.Module):
         return y
 
 
+class DynamicNet2(nn.Module):
+    """DynamicNet2."""
+    def __init__(self,
+                 model_dim=None,
+                 mlp_dim=None,
+                 num_classes=None,
+                 word_embedding_dim=None,
+                 initial_embeddings=None,
+                 **kwargs):
+        super(Net, self).__init__()
+        self.model_dim = model_dim
+        self.initial_embeddings = initial_embeddings
+        self.rnn = nn.RNNCell(word_embedding_dim, model_dim)
+        self.l0 = nn.Linear(model_dim, mlp_dim)
+        self.l1 = nn.Linear(mlp_dim, num_classes)
+        
+    def forward(self, x, lengths):
+        batch_size = x.size(0)
+        max_len = max(lengths)
+
+        emb = Variable(torch.from_numpy(
+            self.initial_embeddings.take(x.numpy(), 0)),
+            volatile=not self.training)
+
+        outputs = [Variable(torch.zeros(batch_size, self.model_dim).float(), volatile=not self.training)]
+
+        for t in range(max_len):
+            choose = torch.ByteTensor(batch_size)
+            indices = []
+            not_indices = []
+            for i, l in enumerate(lengths):
+                if l >= max(lengths) - t:
+                    indices.append(i)
+                    choose[i] = 1
+                else:
+                    not_indices.append(i)
+                    choose[i] = 0
+
+            # Build batch.
+            batch = torch.index_select(emb[:,t,:], 0, Variable(torch.LongTensor(indices), volatile=not self.training))
+            h_prev = torch.index_select(outputs[-1], 0, Variable(torch.LongTensor(indices), volatile=not self.training))
+            h_next = self.rnn(batch, h_prev)
+
+            # Some preparation for output for next step.
+            if len(not_indices) > 0:
+                not_h_prev = torch.index_select(outputs[-1], 0, Variable(torch.LongTensor(not_indices), volatile=not self.training))
+                _not_h_prev = torch.chunk(not_h_prev, len(not_indices))
+            _h_next = torch.chunk(h_next, len(indices))
+            
+            # Make variable for next step.
+            _h = []
+            _h_next_idx = 0
+            _not_h_prev_idx = 0
+            for c in choose:
+                if c == 1:
+                    _h.append(_h_next[_h_next_idx])
+                    _h_next_idx += 1
+                else:
+                    _h.append(_not_h_prev[_not_h_prev_idx])
+                    _not_h_prev_idx += 1
+            h = torch.cat(_h, 0)
+
+            outputs.append(h)
+
+        hn = outputs[-1]
+        h = F.relu(self.l0(F.dropout(hn, 0.5, self.training)))
+        h = F.relu(self.l1(F.dropout(h, 0.5, self.training)))
+        y = F.log_softmax(h)
+        return y
+
+
 class StaticNet(nn.Module):
     """StaticNet."""
     def __init__(self,
@@ -148,11 +239,49 @@ class StaticNet(nn.Module):
         y = F.log_softmax(h)
         return y
 
+
+class StaticNet2(nn.Module):
+    """StaticNet2."""
+    def __init__(self,
+                 model_dim=None,
+                 mlp_dim=None,
+                 num_classes=None,
+                 word_embedding_dim=None,
+                 initial_embeddings=None,
+                 **kwargs):
+        super(Net, self).__init__()
+        self.model_dim = model_dim
+        self.initial_embeddings = initial_embeddings
+        self.rnn = nn.RNNCell(word_embedding_dim, model_dim)
+        self.l0 = nn.Linear(model_dim, mlp_dim)
+        self.l1 = nn.Linear(mlp_dim, num_classes)
+        
+    def forward(self, x, lengths):
+        batch_size, seq_length = x.size()[:2]
+
+        emb = Variable(torch.from_numpy(
+            self.initial_embeddings.take(x.numpy(), 0)),
+            volatile=not self.training)
+        h = Variable(torch.zeros(batch_size, self.model_dim), volatile=not self.training)
+
+        for t in range(seq_length):
+            inp = emb[:,t,:]
+            h = self.rnn(inp, h)
+
+        h = F.relu(self.l0(F.dropout(h.squeeze(), 0.5, self.training)))
+        h = F.relu(self.l1(F.dropout(h, 0.5, self.training)))
+        y = F.log_softmax(h)
+        return y
+
 # Pick model.
 if args.style == "dynamic":
     Net = DynamicNet
+elif args.style == "dynamic2":
+    Net = DynamicNet2
 elif args.style == "static":
     Net = StaticNet
+elif args.style == "static2":
+    Net = StaticNet2
 else:
     raise NotImplementedError
 
