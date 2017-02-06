@@ -1,5 +1,6 @@
 import numpy as np
 import random
+from collections import deque
 
 
 # With loaded embedding matrix, the padding vector will be initialized to zero
@@ -78,3 +79,42 @@ def Tokenize(examples, vocabulary):
     for e in examples:
         e.tokens = [vocabulary.get(w, vocabulary.get(UNK_TOKEN)) for w in e.tokens]
     return examples
+
+
+def make_batch(examples):
+    data = []
+    target = []
+
+    for e in examples:
+        data.append(list(reversed(e.tokens[:])))
+        target.append(e.label)
+
+    return data, target
+
+
+class Accumulator(object):
+
+    cache = dict()
+
+    def __init__(self, trail=100):
+        self.trail = trail
+
+    def add(self, key, val):
+        self.cache.setdefault(key, deque(maxlen=self.trail)).append(val)
+
+    def get(self, key):
+        ret = self.cache.get(key, [])
+        try:
+            del self.cache[key]
+        except:
+            pass
+        return ret
+
+    def get_avg(self, key):
+        return np.array(self.get(key)).mean()
+
+
+class Args(object):
+    def __repr__(self):
+        s = "{}"
+        return s.format(self.__dict__)
