@@ -2,6 +2,13 @@ import numpy as np
 import random
 from collections import deque
 
+# PyTorch
+import torch
+import torch.nn as nn
+from torch.autograd import Variable
+import torch.nn.functional as F
+import torch.optim as optim
+
 
 # With loaded embedding matrix, the padding vector will be initialized to zero
 # and will not be trained. Hopefully this isn't a problem. It seems better than
@@ -149,3 +156,33 @@ class Args(object):
     def __repr__(self):
         s = "{}"
         return s.format(self.__dict__)
+
+
+def make_batch(examples, dynamic=True):
+    # Build lengths.
+    lengths = []
+    for e in examples:
+        lengths.append(len(e.tokens))
+
+    # Build input.
+    if dynamic: # dynamic: list of lists
+        data = []
+        for e in examples:
+            d = list(reversed(e.tokens[:]))
+            data.append(d)
+    else: # static: batch matrix
+        batch_size = len(examples)
+        max_len = max(len(e.tokens) for e in examples)
+        data = torch.zeros(batch_size, max_len).long()
+        for i, e in enumerate(examples):
+            l = len(e.tokens)
+            offset = max_len - l
+            data[i,offset:max_len] = torch.Tensor(e.tokens[:])
+
+    # Build labels.
+    target = []
+    for e in examples:
+        target.append(e.label)
+    target = torch.LongTensor(target)
+
+    return data, target, lengths
